@@ -1,12 +1,9 @@
 const OpenAI = require("openai");
 
 exports.configureOpenApi = (config) => {
-    if (!config.apiKey) {
-        console.error("OpenAI API key not configured");
-        msg.reply("Open AI configuration missing. Get Mike to fix it.");
-        return;
-    }
-    const configuration = new OpenAI(config);
-
-    return configuration;
+    // Wir erstellen eine neue Instanz mit dem Key und der Custom URL (für xAI)
+    return new OpenAI({
+        apiKey: config.apiKey,
+        baseURL: config.baseURL, 
+    });
 };

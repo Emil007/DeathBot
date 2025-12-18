@@ -1,91 +1,85 @@
 require('dotenv').config({ path: `.env.${process.env.PROD ? "prod" : "dev"}` });
-const Discord = require('discord.js');
-const botCommands = require('./commands');
-const stateFuncs = require("./common/state");
-const jobManager = require("./jobs/job-manager");
-const aiFuncs = require("./commands/ai/ai-picker");
+const { Client, Intents, MessageEmbed } = require('discord.js');
+const fs = require("fs");
 
-const bot = new Discord.Client({ intents: ["GUILDS", "GUILD_MESSAGES", "DIRECT_MESSAGES"], partials: ["CHANNEL"] });
-bot.commands = new Discord.Collection();
+// NEU: Wizard (Setup-Assistent) Imports
+const wizardState = require("./common/wizard-state");
+const wizardHandler = require("./common/wizard-handler");
 
-Object.keys(botCommands).map(key => {
-  bot.commands.set(botCommands[key].name, botCommands[key]);
+// WICHTIG: Intents für DMs (Direct Messages) und Partials hinzufügen
+const client = new Client({ 
+    intents: [
+        Intents.FLAGS.GUILDS, 
+        Intents.FLAGS.GUILD_MESSAGES, 
+        Intents.FLAGS.DIRECT_MESSAGES // Erlaubt DMs
+    ],
+    partials: ["CHANNEL"] // Notwendig für DMs
 });
 
-const TOKEN = process.env.TOKEN;
-const BOT_USER_ID = process.env.BOT_USER_ID;
-
-console.log(new Date(), "[death-bot]: Initialising state...");
-stateFuncs.init();
-console.log(new Date(), "[death-bot]: State initialised successfully!");
-let server = null;
-let channel = null;
-let voiceChannel = null;
-
-const isRestrictedCommand = (cmd, msg) => {
-  if (!cmd.restrictionLevel) {
-    return false;
-  }
-
-  var currentState = stateFuncs.getState();
-  var user = currentState.privilegedUsers[msg.author.id];
-
-  if (!user || cmd.restrictionLevel < user.restrictionLevel) {
-    console.error(`Restricted command - ${msg.author.username} attempted to invoke`, cmd);
-    return true;
-  }
-  
-  return false;
+// Hilfsfunktionen laden
+const functions = {
+    addCeleb: require("./common/add-celeb"),
+    addPlayer: require("./common/add-player"),
+    checkWiki: require("./common/check-wiki"),
+    error: require("./common/error"),
+    find: require("./common/find"),
+    format: require("./common/format"),
+    imageSearch: require("./common/image-search"),
+    kill: require("./common/kill"),
+    pointManager: require("./common/point-manager"),
+    state: require("./common/state")
 }
 
-bot.login(TOKEN);
+const connection = {}; 
 
-bot.once('ready', () => {
-  console.log(new Date(), `[death-bot]: Bot logged in under username ${bot.user.tag}`);
-  bot.user.setPresence({
-      activities: [
-        {
-          name: "Chess",
-          type: "PLAYING"
-        }
-      ]
-  });
-  
-  console.log(new Date(), "[death-bot]: Establishing channel connections...");
-  server = bot.guilds.cache.get(process.env.SERVER);
-  channel = server.channels.cache.get(process.env.CHANNEL);
-  voiceChannel = server.channels.cache.get(process.env.VOICE);
-  console.log(new Date(), "[death-bot]: Channel connections established successfully.");
-
-  // Start scheduled jobs
-  jobManager.init(stateFuncs, channel);
+client.on('ready', () => {
+    console.log(`Logged in as ${client.user.tag}!`);
+    functions.state.loadState();
 });
 
-bot.on('messageCreate', msg => {
-  const args = msg.content.split(/ +/);
-  const command = args.shift().toLowerCase();
+client.on('messageCreate', async msg => {
+    if (msg.author.bot) return;
 
-  if (msg.content.includes(`<@${BOT_USER_ID}>`)) {
-    aiFuncs.aiPicker(stateFuncs, msg);
-    return;
-  }
-
-  if (!bot.commands.has(command)) return;
-
-  try {
-    let botCommand = bot.commands.get(command);
-    if (isRestrictedCommand(botCommand, msg)) {
-      return;
+    // --- WIZARD LOGIK START ---
+    // Wenn User im Setup-Modus ist UND eine DM schreibt (und kein Befehl nutzt)
+    if (msg.channel.type === "DM" && wizardState.has(msg.author.id) && !msg.content.startsWith("!")) {
+        await wizardHandler.handle(msg, functions);
+        return; // Verhindert, dass es als normaler Befehl gewertet wird
     }
+    // --- WIZARD LOGIK ENDE ---
 
-    botCommand.execute(msg, args, stateFuncs, channel);    
-  } catch (error) {
-    console.error(error);
-    msg.reply("An error occurred with this command, causing it to fail.");
-  }
+    if (msg.content.indexOf(process.env.PREFIX) !== 0) return;
+
+    const args = msg.content.slice(process.env.PREFIX.length).trim().split(/ +/g);
+    const command = args.shift().toLowerCase();
+    const cmd = client.commands.get(command);
+
+    if (!cmd) return;
+
+    cmd.run(client, functions, connection)(msg, text => msg.channel.send(text));
 });
 
+// Commands laden
+client.commands = new Map();
+const commands = require("./commands");
+const commandList = require("./data/command-list.json");
 
-bot.on('error', err => {
-  console.error(new Date(), "[death-bot]: An unknown error occurred - details follow:", err);
-});
+for (const command of Object.keys(commandList)) {
+    const cmdData = commandList[command];
+    if (commands[cmdData.command]) {
+        client.commands.set(command.substring(1), commands[cmdData.command]);
+    }
+}
+
+// --- JOBS LADEN ---
+// 1. Der klassische Wiki-Poll (für Punktevergabe bei Picks)
+require("./jobs/poll-wiki")(functions, client);
+
+// 2. NEU: Der Tagesbericht (Diff Report EN/DE)
+require("./jobs/daily-diff-report")(functions, client);
+
+// 3. NEU: Backup System
+require("./jobs/backup-system")(functions, client);
+
+
+client.login(process.env.TOKEN);

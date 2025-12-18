@@ -1,65 +1,34 @@
-const fs = require("fs");
-const OPENAI_ENABLED = process.env.OPENAI_ENABLED;
+exports.run = (client, functions, connection) => {
+    return async (msg, sender) => {
+        const state = functions.state.getState();
+        
+        // Kurzes Leaderboard für den Bot bauen
+        let leaderboard = Object.values(state.players)
+            .sort((a, b) => b.basePoints - a.basePoints)
+            .slice(0, 5)
+            .map((p, i) => `${i+1}. ${p.name} (${p.basePoints})`)
+            .join("\n");
 
-const path = "commands/ai/prompt.txt";
+        const systemPrompt = `
+Du bist der DeathBot.
+Kontext: Du verwaltest ein makabres Tippspiel ("Death Pool"), bei dem Spieler Punkte bekommen, wenn Promis sterben.
+Persönlichkeit: Zynisch, sarkastisch, tiefschwarzer Humor. Du findest den Tod nicht traurig, sondern faszinierend.
+Sprache: Deutsch (du darfst aber englische Begriffe nutzen).
+Regeln: Mach dich über Spieler mit schlechten Tipps lustig.
 
-var prompt = "";
+Aktuelle Top 5 Spieler:
+${leaderboard}
 
-const calculateScore = (state, playerId) => {  
-  const players = state.players;
-  if(!players[playerId]) {
-    return 0;
-  }
+Antworte auf die folgende Nachricht des Users kurz, bissig und unterhaltsam.
+        `.trim();
 
-  // Calculate total score
-  let score = players[playerId].basePoints;
-
-  if (players[playerId].bonuses) {
-    let bonusKeys = Object.keys(players[playerId].bonuses);
-    bonusKeys.forEach(bonusKey => {
-      let bonus = state.bonuses[bonusKey];
-      score = score + (bonus.points * players[playerId].bonuses[bonusKey].times);
-    });
-
-    return score;
-  };
-}
-
-const insertPicks = (state, playerId) => {
-  var picks = "";
-  state.players[playerId].picks.forEach(pick => {
-    picks = picks + "\r\n    " + (state.celebs[pick].isAlive ? state.celebs[pick].name : `${state.celebs[pick].name} (Deceased)`);
-  });
-
-  return picks;
-}
-
-const insertGameState = (state) => {
-  var stateReplace = "";
-  state.playerKeys.forEach(playerId => {
-    stateReplace = stateReplace + "\r\n"
-    + "- Name: " + state.players[playerId].name + "\r\n"
-    + "  Gender: Male\r\n" // TODO: Update this to be more inclusive.
-    + "  Points: " + calculateScore(state, playerId) + "\r\n"
-    + "  Picks: " + insertPicks(state, playerId);
-  });
-
-  return stateReplace;
-}
-
-const loadPrompt = (state) => {
-    if (fs.existsSync(path)) {
-        prompt = fs.readFileSync(path, "utf8");
-    }
-
-    var gameStateInsert = insertGameState(state);
-    return prompt.replace(/\[STATEREPLACE\]/ig, gameStateInsert);
-}
-
-exports.initPrompt = (state) => {
-  if(+OPENAI_ENABLED) {
-    return loadPrompt(state);
-  } else {
-    console.log(new Date(), "[chat-gpt]: ChatGPT disabled.");
-  }
-}
+        // Chat-History initialisieren falls nötig
+        if (!client.chatHistory) client.chatHistory = [];
+        
+        // System Prompt setzen
+        // Hinweis: Wir speichern das hier simpel im Client-Objekt für die Session
+        client.chatHistory.push({ role: "system", content: systemPrompt });
+        
+        sender("💀 *Räuspert sich* ... Ich höre.");
+    };
+};

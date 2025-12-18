@@ -1,84 +1,67 @@
-require('dotenv').config({ path: `../.env.${process.env.PROD ? "prod" : "dev"}` });
-const error = require("../../common/error");
-const find = require("../../common/find")
-const image = require("../../common/image-search");
-const celebAdder = require("../../common/add-celeb");
-const playerAdder = require("../../common/add-player");
-const format = require("../../common/format");
-const { MessageEmbed } = require('discord.js');
-const PICK_LIMIT = process.env.PICK_LIMIT;
-const PICK_CUTOFF_DATE = new Date(process.env.PICK_CUTOFF_DATE + "T23:59:59.999");
-const ALLOW_SAME_PICK = process.env.ALLOW_SAME_PICK;
+const wikiSearch = require("../../common/wiki-search");
 
-module.exports = {
-  name: "!pick",
-  description: "Adds a named pick for the invoking user",
-  execute(msg, args, stateFuncs) {
-    if (new Date() > PICK_CUTOFF_DATE) {
-        msg.reply(`No new picks are accepted after ${PICK_CUTOFF_DATE.toDateString()}.`);
-        return;
-    }
+exports.run = (client, functions, connection) => {
+    return async (msg, sender) => {
+        const PICK_LIMIT = parseInt(process.env.PICK_LIMIT) || 25;
+        const stateFuncs = functions.state;
+        const state = stateFuncs.getState();
+        
+        // Logik: Wenn Admin jemanden erwähnt (!pick @User Name), pickt er für den.
+        // Sonst pickt der User für sich selbst.
+        let playerId = msg.author.id;
+        let playerName = msg.author.username;
+        let content = msg.content;
 
-    if (!args || !args[0]) {
-      error.usage("!pick [name]", msg);
-      return;
-    }
+        if (msg.mentions.users.size > 0 && msg.author.id === process.env.ADMIN_ID) {
+            const target = msg.mentions.users.first();
+            playerId = target.id;
+            playerName = target.username;
+            content = content.replace(/<@!?[0-9]+>/, "").trim();
+        }
 
-    let playerId = find.findPlayerByDiscordId(msg.author.id, stateFuncs);
-    if (!playerId) {
-        let newUserId = msg.author.id;
-        playerId = playerAdder.addPlayer(stateFuncs, msg, msg.author.username, newUserId);
-        msg.channel.send(`Welcome to the game, ${format.bold(msg.author.username + "!")}`);
-    }
+        // Input bereinigen (!pick entfernen)
+        let pickName = content.replace(/^!pick\s+/i, "").trim();
+        if (!pickName) {
+            sender("Bitte einen Namen angeben: `!pick Name`");
+            return;
+        }
 
-    if (stateFuncs.getState().players[playerId].picks.length >= +PICK_LIMIT) {
-        msg.reply(`You already have ${PICK_LIMIT} picks - please remove one first if you'd like to replace it.`);
-        return;
-    }
+        // Spieler anlegen falls neu
+        if (!state.players[playerId]) {
+            stateFuncs.addPlayer({ name: playerName, id: playerId, picks: [], basePoints: 0 });
+        }
 
-    let state = stateFuncs.getState();
-    let celeb = find.findCeleb(args, null, stateFuncs, true);
-    let celebName = args.join(" ");
+        const player = state.players[playerId];
+        if (player.picks.length >= PICK_LIMIT) {
+            sender(`❌ ${playerName} hat bereits ${PICK_LIMIT} Picks.`);
+            return;
+        }
 
-    if (!celeb) {
-        celeb = celebAdder.addCeleb(stateFuncs, msg, celebName);
-        state = stateFuncs.getState();
-    } else {
-        celebName = state.celebs[celeb].name;
-    }
+        sender(`🔎 Suche nach "${pickName}"...`);
+        
+        // Neue Suche nutzen (die wir in common/wiki-search.js erstellt haben)
+        const result = await wikiSearch.search(pickName);
 
-    let player = {...state.players[playerId]};
-    if (player.picks.includes(celeb)) {
-        msg.reply(`You've already picked ${celebName}.`);
-        return;
-    }
-    
-    if (!(+ALLOW_SAME_PICK) && state.celebs[celeb].players.length > 0) {
-        msg.reply(`${celebName} has already been picked by ${format.bold(state.players[state.celebs[celeb].players[0]].name)} - players aren't allowed to have the same pick.`);
-        return;
-    }
+        if (result.type === "NONE" || result.type === "ERROR") {
+            sender(`❌ Nichts gefunden. Versuch es mit dem Wiki-Link.`);
+            return;
+        }
 
-    player.picks = [
-        ...player.picks,
-        celeb
-    ];
-    stateFuncs.updatePlayer(playerId, player);
+        if (result.type === "MULTIPLE") {
+            sender(`🤔 Mehrere Ergebnisse. Bitte nutze den genauen Link oder den Wizard (\`!start\`):\n` + result.options.slice(0,3).map(o => `• ${o.name}`).join("\n"));
+            return;
+        }
 
-    let newCeleb =  {...state.celebs[celeb]};
-    newCeleb.players = [
-        ...newCeleb.players,
-        playerId
-    ];
-    stateFuncs.updateCeleb(celeb, newCeleb);
+        // Treffer (EXACT oder URL)
+        let finalName = result.type === "URL" ? decodeURIComponent(result.value.split("/").pop()).replace(/_/g, " ") : result.name;
 
-    msg.channel.send(`${format.bold(state.players[playerId].name)} has picked ${format.bold(celebName)}`);
+        if (player.picks.includes(finalName)) {
+            sender(`⚠️ ${finalName} ist schon auf der Liste.`);
+            return;
+        }
 
-    image.getImage(celebName)
-    .then(imgPath => {
-        const imageEmbed = new MessageEmbed()
-        .setImage(imgPath);
-
-        msg.channel.send({embeds: [imageEmbed]});
-    });
-  }
-}
+        functions.addCeleb(finalName, playerId, msg, () => {
+             sender(`✅ **${finalName}** für ${playerName} hinzugefügt! (${player.picks.length + 1}/${PICK_LIMIT})`);
+        });
+    };
+};
